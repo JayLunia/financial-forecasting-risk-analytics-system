@@ -1,0 +1,6 @@
+seed: 21
+n_days: 900
+test_size: 0.25
+symbol: DEMO
+report_path: reports/risk_dashboard.csv
+
