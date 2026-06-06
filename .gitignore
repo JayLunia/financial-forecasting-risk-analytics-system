@@ -1,7 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
-reports/*.csv
 data/raw/
 data/processed/
-
+.pytest_cache/
+.DS_Store
