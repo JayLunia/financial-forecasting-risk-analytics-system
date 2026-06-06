@@ -29,6 +29,8 @@ st.caption("Real fundamentals-based model comparison, SHAP explanations, and por
 models = read_report("model_summary.csv")
 thresholds = read_report("threshold_experiment.csv")
 portfolio = read_report("portfolio_analytics.csv")
+constrained_portfolio = read_report("portfolio_construction.csv")
+constrained_summary = read_report("constrained_portfolio_summary.csv")
 recommendations = read_report("forward_recommendations.csv")
 consensus = read_report("consensus_recommendations.csv")
 shap_summary = read_report("shap_summary.csv")
@@ -84,6 +86,35 @@ with tab_portfolio:
                 color="hit_rate",
                 hover_name="model",
                 title="Risk vs outperformance by model",
+            ),
+            use_container_width=True,
+        )
+    st.subheader("Constrained Portfolio Construction")
+    st.dataframe(constrained_summary, use_container_width=True)
+    if not constrained_summary.empty:
+        st.plotly_chart(
+            px.bar(
+                constrained_summary,
+                x="model",
+                y="net_outperformance_pct",
+                color="total_transaction_cost_pct",
+                title="Net outperformance after transaction costs",
+            ),
+            use_container_width=True,
+        )
+    if not constrained_portfolio.empty:
+        st.subheader("Position Sizing")
+        st.dataframe(constrained_portfolio, use_container_width=True)
+        sector_view = (
+            constrained_portfolio.groupby(["model", "Sector"], as_index=False)["position_weight"].sum()
+        )
+        st.plotly_chart(
+            px.bar(
+                sector_view,
+                x="model",
+                y="position_weight",
+                color="Sector",
+                title="Sector weights after concentration limits",
             ),
             use_container_width=True,
         )

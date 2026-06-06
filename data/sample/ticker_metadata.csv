@@ -1,0 +1,51 @@
+Ticker,Sector
+AAPL,Information Technology
+MSFT,Information Technology
+GOOG,Communication Services
+AMZN,Consumer Discretionary
+WMT,Consumer Staples
+XOM,Energy
+CVX,Energy
+JPM,Financials
+BAC,Financials
+C,Financials
+WFC,Financials
+GS,Financials
+JNJ,Health Care
+PFE,Health Care
+MRK,Health Care
+BIIB,Health Care
+UNH,Health Care
+GE,Industrials
+CAT,Industrials
+MMM,Industrials
+BA,Industrials
+F,Consumer Discretionary
+GM,Consumer Discretionary
+DIS,Communication Services
+CSCO,Information Technology
+INTC,Information Technology
+HPQ,Information Technology
+IBM,Information Technology
+AMD,Information Technology
+EBAY,Consumer Discretionary
+MCD,Consumer Discretionary
+SBUX,Consumer Discretionary
+COST,Consumer Staples
+PG,Consumer Staples
+KO,Consumer Staples
+PEP,Consumer Staples
+LOW,Consumer Discretionary
+NEM,Materials
+MOS,Materials
+NUE,Materials
+XEL,Utilities
+SO,Utilities
+NEE,Utilities
+V,Information Technology
+MA,Information Technology
+TSLA,Consumer Discretionary
+BLK,Financials
+PNC,Financials
+NOC,Industrials
+LMT,Industrials

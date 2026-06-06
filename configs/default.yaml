@@ -2,6 +2,8 @@ seed: 21
 source_repo: https://github.com/robertmartin8/MachineLearningStocks
 keystats_path: data/sample/keystats.csv
 forward_sample_path: data/sample/forward_sample.csv
+sec_features_path: data/sample/sec_filing_features.csv
+ticker_metadata_path: data/sample/ticker_metadata.csv
 train_end_date: "2011-12-31"
 outperformance_threshold: 10.0
 threshold_experiments:
@@ -12,8 +14,14 @@ probability_cutoff: 0.5
 top_n_recommendations: 25
 missing_indicator_threshold: 0.10
 min_feature_non_missing_rate: 0.35
+sec_min_feature_non_missing_rate: 0.01
 enable_hyperparameter_tuning: true
 enable_neural_network: false
 enable_xgboost: true
+enable_lightgbm: true
 shap_sample_size: 300
+portfolio_capital: 100000
+transaction_cost_bps: 25
+max_position_weight: 0.05
+max_sector_weight: 0.25
 report_dir: reports

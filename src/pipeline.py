@@ -18,10 +18,24 @@ from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import FunctionTransformer, RobustScaler
 
+try:
+    from lightgbm import LGBMClassifier
+except ImportError:  # LightGBM is optional because wheels are platform-specific.
+    LGBMClassifier = None
+
 
 OUTPERFORMANCE_THRESHOLD = 10.0
 METRIC_COLUMNS = ["accuracy", "precision", "recall", "macro_f1", "roc_auc"]
-NON_FEATURE_COLUMNS = {"Date", "Unix", "Ticker", "Price", "stock_p_change", "SP500", "SP500_p_change"}
+NON_FEATURE_COLUMNS = {
+    "Date",
+    "Unix",
+    "Ticker",
+    "Price",
+    "stock_p_change",
+    "SP500",
+    "SP500_p_change",
+    "Sector",
+}
 ALIASES = {
     "Quarterly Revenue Growth": "Qtrly Revenue Growth",
     "Quarterly Earnings Growth": "Qtrly Earnings Growth",
@@ -68,8 +82,16 @@ def clean_numeric_frame(data: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return cleaned.replace([np.inf, -np.inf], np.nan)
 
 
+def normalize_ticker(value: object) -> str:
+    return str(value).strip().upper()
+
+
 def standardize_columns(data: pd.DataFrame) -> pd.DataFrame:
     return data.rename(columns={source: target for source, target in ALIASES.items() if source in data.columns})
+
+
+def median_imputer() -> SimpleImputer:
+    return SimpleImputer(strategy="median", keep_empty_features=True)
 
 
 def load_dataset(path: str) -> pd.DataFrame:
@@ -110,6 +132,46 @@ def add_engineered_features(data: pd.DataFrame) -> pd.DataFrame:
     return out.replace([np.inf, -np.inf], np.nan)
 
 
+def load_sec_features(path: str | None) -> pd.DataFrame:
+    if not path or not Path(path).exists():
+        return pd.DataFrame()
+    sec = pd.read_csv(path)
+    required = {"Ticker", "Date"}
+    if not required.issubset(sec.columns):
+        raise ValueError(f"SEC feature file must contain columns: {sorted(required)}")
+    sec["Date"] = pd.to_datetime(sec["Date"], errors="coerce")
+    sec["_TickerKey"] = sec["Ticker"].map(normalize_ticker)
+    feature_columns_to_clean = [column for column in sec.columns if column not in {"Ticker", "Date", "_TickerKey"}]
+    sec = clean_numeric_frame(sec.dropna(subset=["Date", "_TickerKey"]), feature_columns_to_clean)
+    return sec.sort_values(["_TickerKey", "Date"]).reset_index(drop=True)
+
+
+def merge_sec_features(data: pd.DataFrame, sec_features: pd.DataFrame) -> pd.DataFrame:
+    if sec_features.empty:
+        return data
+    out = data.copy()
+    out["_TickerKey"] = out["Ticker"].map(normalize_ticker)
+    merged_parts = []
+    sec_value_columns = [column for column in sec_features.columns if column not in {"Ticker", "Date", "_TickerKey"}]
+    for ticker, group in out.sort_values("Date").groupby("_TickerKey", sort=False):
+        ticker_sec = sec_features[sec_features["_TickerKey"] == ticker]
+        if ticker_sec.empty:
+            group = group.copy()
+            for column in sec_value_columns:
+                group[column] = np.nan
+            merged_parts.append(group)
+            continue
+        merged = pd.merge_asof(
+            group.sort_values("Date"),
+            ticker_sec[["Date", *sec_value_columns]].sort_values("Date"),
+            on="Date",
+            direction="backward",
+        )
+        merged_parts.append(merged)
+    merged_data = pd.concat(merged_parts, ignore_index=True).drop(columns=["_TickerKey"], errors="ignore")
+    return merged_data.sort_values("Date").reset_index(drop=True)
+
+
 def add_missing_indicators(data: pd.DataFrame, columns: list[str], min_missing_rate: float) -> pd.DataFrame:
     out = data.copy()
     for column in columns:
@@ -131,11 +193,16 @@ def time_based_split(data: pd.DataFrame, train_end_date: str) -> tuple[pd.DataFr
     return train, test
 
 
-def models(seed: int, include_neural_network: bool = False, include_xgboost: bool = True) -> dict[str, Pipeline]:
+def models(
+    seed: int,
+    include_neural_network: bool = False,
+    include_xgboost: bool = True,
+    include_lightgbm: bool = False,
+) -> dict[str, Pipeline]:
     clipper = FunctionTransformer(lambda values: np.clip(values, -1e9, 1e9), validate=False)
     model_map = {
         "extra_trees": Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", median_imputer()),
             ("model", ExtraTreesClassifier(
                 n_estimators=350,
                 min_samples_leaf=4,
@@ -145,7 +212,7 @@ def models(seed: int, include_neural_network: bool = False, include_xgboost: boo
             )),
         ]),
         "random_forest": Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", median_imputer()),
             ("model", RandomForestClassifier(
                 n_estimators=350,
                 min_samples_leaf=4,
@@ -155,13 +222,13 @@ def models(seed: int, include_neural_network: bool = False, include_xgboost: boo
             )),
         ]),
         "gradient_boosting": Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", median_imputer()),
             ("model", GradientBoostingClassifier(random_state=seed)),
         ]),
     }
     if include_neural_network:
         model_map["mlp"] = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", median_imputer()),
             ("clip", clipper),
             ("scaler", RobustScaler()),
             ("model", MLPClassifier(
@@ -175,7 +242,7 @@ def models(seed: int, include_neural_network: bool = False, include_xgboost: boo
         ])
     if include_xgboost:
         model_map["xgboost"] = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
+            ("imputer", median_imputer()),
             ("model", XGBClassifier(
                 n_estimators=300,
                 max_depth=3,
@@ -188,12 +255,27 @@ def models(seed: int, include_neural_network: bool = False, include_xgboost: boo
                 n_jobs=-1,
             )),
         ])
+    if include_lightgbm and LGBMClassifier is not None:
+        model_map["lightgbm"] = Pipeline([
+            ("imputer", median_imputer()),
+            ("model", LGBMClassifier(
+                n_estimators=450,
+                learning_rate=0.035,
+                num_leaves=31,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                class_weight="balanced",
+                random_state=seed,
+                n_jobs=-1,
+                verbosity=-1,
+            )),
+        ])
     return model_map
 
 
 def tune_extra_trees(train: pd.DataFrame, features: list[str], seed: int, threshold: float) -> Pipeline:
     base = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
+        ("imputer", median_imputer()),
         ("model", ExtraTreesClassifier(class_weight="balanced", random_state=seed, n_jobs=-1)),
     ])
     search = GridSearchCV(
@@ -246,7 +328,7 @@ def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.Dat
 
 def evaluate_regression(train: pd.DataFrame, test: pd.DataFrame, features: list[str], seed: int, top_n: int) -> tuple[RegressionResult, pd.DataFrame]:
     model = Pipeline([
-        ("imputer", SimpleImputer(strategy="median")),
+        ("imputer", median_imputer()),
         ("model", ExtraTreesRegressor(n_estimators=350, min_samples_leaf=4, random_state=seed, n_jobs=-1)),
     ])
     model.fit(train[features], train["stock_p_change"] - train["SP500_p_change"])
@@ -273,8 +355,18 @@ def train_best_model(data: pd.DataFrame, features: list[str], best_model_name: s
     return model
 
 
-def predict_forward(model: Pipeline, forward_data_path: str, features: list[str], top_n: int) -> pd.DataFrame:
+def predict_forward(
+    model: Pipeline,
+    forward_data_path: str,
+    features: list[str],
+    top_n: int,
+    sec_features: pd.DataFrame,
+    metadata: pd.DataFrame,
+) -> pd.DataFrame:
     forward = add_engineered_features(standardize_columns(pd.read_csv(forward_data_path)))
+    forward["Date"] = pd.to_datetime(forward["Date"], errors="coerce")
+    forward = merge_sec_features(forward, sec_features)
+    forward = attach_metadata(forward, metadata)
     forward = clean_numeric_frame(forward, [column for column in features if column in forward.columns])
     for column in features:
         if column.endswith(" Missing") and column not in forward.columns:
@@ -285,6 +377,8 @@ def predict_forward(model: Pipeline, forward_data_path: str, features: list[str]
         raise ValueError(f"Forward sample is missing feature columns: {missing[:5]}")
     probabilities = model.predict_proba(forward[features])[:, 1]
     output = forward[["Ticker"]].copy()
+    if "Sector" in forward.columns:
+        output["Sector"] = forward["Sector"]
     output["predicted_outperformance_probability"] = probabilities
     output = output.sort_values("predicted_outperformance_probability", ascending=False).head(top_n)
     return output.reset_index(drop=True)
@@ -323,7 +417,7 @@ def threshold_sweep(train: pd.DataFrame, test: pd.DataFrame, features: list[str]
         model = ExtraTreesClassifier(n_estimators=300, min_samples_leaf=4, class_weight="balanced", random_state=seed, n_jobs=-1)
         result, _ = evaluate_model(
             name=f"extra_trees_threshold_{threshold:g}",
-            model=Pipeline([("imputer", SimpleImputer(strategy="median")), ("model", model)]),
+            model=Pipeline([("imputer", median_imputer()), ("model", model)]),
             train=train,
             test=test,
             features=features,
@@ -334,7 +428,12 @@ def threshold_sweep(train: pd.DataFrame, test: pd.DataFrame, features: list[str]
     return pd.DataFrame(rows)
 
 
-def usable_features(train: pd.DataFrame, features: list[str], min_non_missing_rate: float) -> list[str]:
+def usable_features(
+    train: pd.DataFrame,
+    features: list[str],
+    min_non_missing_rate: float,
+    require_early_coverage: bool = True,
+) -> list[str]:
     first_fold_end = max(1, len(train) // 4)
     early_train = train.iloc[:first_fold_end]
     usable = []
@@ -344,7 +443,7 @@ def usable_features(train: pd.DataFrame, features: list[str], min_non_missing_ra
         series = train[feature]
         if (
             series.notna().mean() >= min_non_missing_rate
-            and early_train[feature].notna().any()
+            and (not require_early_coverage or early_train[feature].notna().any())
             and series.nunique(dropna=True) > 1
         ):
             usable.append(feature)
@@ -364,6 +463,72 @@ def consensus_recommendations(selections: list[pd.DataFrame], top_n: int) -> pd.
         .sort_values(["votes", "avg_probability"], ascending=False)
         .head(top_n)
     )
+
+
+def load_ticker_metadata(path: str | None) -> pd.DataFrame:
+    if not path or not Path(path).exists():
+        return pd.DataFrame(columns=["Ticker", "Sector"])
+    metadata = pd.read_csv(path)
+    if not {"Ticker", "Sector"}.issubset(metadata.columns):
+        raise ValueError("Ticker metadata must include Ticker and Sector columns")
+    metadata["Ticker"] = metadata["Ticker"].map(normalize_ticker)
+    return metadata[["Ticker", "Sector"]].drop_duplicates("Ticker")
+
+
+def attach_metadata(data: pd.DataFrame, metadata: pd.DataFrame) -> pd.DataFrame:
+    if metadata.empty:
+        out = data.copy()
+        out["Sector"] = "Unknown"
+        return out
+    out = data.copy()
+    out["_TickerKey"] = out["Ticker"].map(normalize_ticker)
+    out = out.merge(metadata.rename(columns={"Ticker": "_TickerKey"}), on="_TickerKey", how="left")
+    out["Sector"] = out["Sector"].fillna("Unknown")
+    return out.drop(columns=["_TickerKey"], errors="ignore")
+
+
+def construct_portfolios(
+    selections: list[pd.DataFrame],
+    metadata: pd.DataFrame,
+    transaction_cost_bps: float,
+    max_position_weight: float,
+    max_sector_weight: float,
+    portfolio_capital: float,
+) -> pd.DataFrame:
+    if not selections:
+        return pd.DataFrame()
+    selected = attach_metadata(pd.concat(selections, ignore_index=True), metadata)
+    rows = []
+    for model_name, group in selected.groupby("model"):
+        ranked = group.sort_values("predicted_outperformance_probability", ascending=False).copy()
+        probabilities = ranked["predicted_outperformance_probability"].clip(lower=0.01)
+        ranked["raw_weight"] = probabilities / probabilities.sum()
+        sector_weights: dict[str, float] = {}
+        for _, row in ranked.iterrows():
+            sector = row["Sector"]
+            available_sector_weight = max_sector_weight - sector_weights.get(sector, 0.0)
+            position_weight = min(float(row["raw_weight"]), max_position_weight, max(0.0, available_sector_weight))
+            if position_weight <= 0:
+                continue
+            sector_weights[sector] = sector_weights.get(sector, 0.0) + position_weight
+            cost_pct = position_weight * transaction_cost_bps / 100.0
+            gross_return = position_weight * row["stock_p_change"]
+            benchmark_return = position_weight * row["SP500_p_change"]
+            rows.append({
+                "model": model_name,
+                "Date": row["Date"],
+                "Ticker": row["Ticker"],
+                "Sector": sector,
+                "position_weight": position_weight,
+                "position_dollars": position_weight * portfolio_capital,
+                "transaction_cost_pct": cost_pct,
+                "gross_contribution_pct": gross_return,
+                "net_contribution_pct": gross_return - cost_pct,
+                "benchmark_contribution_pct": benchmark_return,
+                "net_outperformance_contribution_pct": gross_return - cost_pct - benchmark_return,
+                "predicted_outperformance_probability": row["predicted_outperformance_probability"],
+            })
+    return pd.DataFrame(rows)
 
 
 def portfolio_analytics(selections: list[pd.DataFrame]) -> pd.DataFrame:
@@ -391,6 +556,25 @@ def portfolio_analytics(selections: list[pd.DataFrame]) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("avg_outperformance", ascending=False)
 
 
+def constrained_portfolio_analytics(portfolio: pd.DataFrame) -> pd.DataFrame:
+    if portfolio.empty:
+        return pd.DataFrame()
+    return (
+        portfolio.groupby("model", as_index=False)
+        .agg(
+            constrained_positions=("Ticker", "size"),
+            invested_weight=("position_weight", "sum"),
+            total_transaction_cost_pct=("transaction_cost_pct", "sum"),
+            net_portfolio_return_pct=("net_contribution_pct", "sum"),
+            benchmark_portfolio_return_pct=("benchmark_contribution_pct", "sum"),
+            net_outperformance_pct=("net_outperformance_contribution_pct", "sum"),
+            max_single_position_weight=("position_weight", "max"),
+            max_sector_weight=("position_weight", lambda weights: portfolio.loc[weights.index].groupby("Sector")["position_weight"].sum().max()),
+        )
+        .sort_values("net_outperformance_pct", ascending=False)
+    )
+
+
 def write_reports(
     results: list[ModelResult],
     selections: list[pd.DataFrame],
@@ -405,6 +589,8 @@ def write_reports(
     threshold_results: pd.DataFrame,
     consensus: pd.DataFrame,
     portfolio: pd.DataFrame,
+    constrained_portfolio: pd.DataFrame,
+    constrained_portfolio_summary: pd.DataFrame,
 ) -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     metrics = pd.DataFrame([result.__dict__ for result in results]).sort_values("macro_f1", ascending=False)
@@ -418,6 +604,8 @@ def write_reports(
     threshold_results.to_csv(report_dir / "threshold_experiment.csv", index=False)
     consensus.to_csv(report_dir / "consensus_recommendations.csv", index=False)
     portfolio.to_csv(report_dir / "portfolio_analytics.csv", index=False)
+    constrained_portfolio.to_csv(report_dir / "portfolio_construction.csv", index=False)
+    constrained_portfolio_summary.to_csv(report_dir / "constrained_portfolio_summary.csv", index=False)
     (report_dir / "risk_dashboard.csv").write_text(selected.to_csv(index=False), encoding="utf-8")
 
     lines = [
@@ -442,6 +630,10 @@ def write_reports(
         "",
         portfolio.to_markdown(index=False),
         "",
+        "## Constrained Portfolio Construction",
+        "",
+        constrained_portfolio_summary.to_markdown(index=False),
+        "",
         "## Top SHAP Drivers",
         "",
         shap_importances.head(15).to_markdown(index=False),
@@ -458,9 +650,9 @@ def write_reports(
         "",
         "- Preserved the original fundamentals-based stock outperformance idea.",
         "- Replaced random train/test splitting with date-based validation to reduce leakage.",
-        "- Added model comparison across extra trees, random forest, and gradient boosting.",
+        "- Added model comparison across extra trees, random forest, gradient boosting, XGBoost, and optional LightGBM.",
         "- Added ROC AUC, F1, precision, recall, selected-stock return, and index-relative outperformance metrics.",
-        "- Added missing-value-aware preprocessing, engineered valuation features, neural net option, XGBoost, tuned ExtraTrees, regression framing, threshold experiments, consensus recommendations, feature importance, SHAP explanations, and portfolio-level risk analytics.",
+        "- Added missing-value-aware preprocessing, engineered valuation features, SEC filing-derived feature joins, neural net option, XGBoost, optional LightGBM, tuned ExtraTrees, regression framing, threshold experiments, consensus recommendations, feature importance, SHAP explanations, transaction costs, position sizing, sector concentration limits, and portfolio-level risk analytics.",
         "- Added saved CSV and Markdown reports for reproducible evaluation.",
     ]
     (report_dir / "analysis_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -468,18 +660,30 @@ def write_reports(
 
 def run(config_path: str) -> None:
     cfg = load_config(config_path)
-    data = add_engineered_features(load_dataset(cfg["keystats_path"]))
+    sec_features = load_sec_features(cfg.get("sec_features_path"))
+    metadata = load_ticker_metadata(cfg.get("ticker_metadata_path"))
+    data = attach_metadata(merge_sec_features(add_engineered_features(load_dataset(cfg["keystats_path"])), sec_features), metadata)
     forward_preview = add_engineered_features(standardize_columns(pd.read_csv(cfg["forward_sample_path"], nrows=1)))
+    forward_preview["Date"] = pd.to_datetime(forward_preview["Date"], errors="coerce")
+    forward_preview = attach_metadata(merge_sec_features(forward_preview, sec_features), metadata)
     forward_columns = set(forward_preview.columns)
     train, test = time_based_split(data, cfg["train_end_date"])
     base_features = [column for column in feature_columns(data) if column in forward_columns]
     data = add_missing_indicators(data, base_features, cfg["missing_indicator_threshold"])
     train, test = time_based_split(data, cfg["train_end_date"])
-    features = usable_features(
+    regular_features = usable_features(
         train,
         [column for column in feature_columns(data) if column in forward_columns or column.endswith(" Missing")],
         cfg["min_feature_non_missing_rate"],
     )
+    sec_candidates = [column for column in feature_columns(data) if column.startswith("SEC ")]
+    sec_feature_candidates = usable_features(
+        train,
+        sec_candidates,
+        cfg.get("sec_min_feature_non_missing_rate", 0.02),
+        require_early_coverage=False,
+    )
+    features = list(dict.fromkeys([*regular_features, *sec_feature_candidates]))
     if len(features) < 10:
         raise ValueError("Too few common feature columns between historical and forward datasets")
     results: list[ModelResult] = []
@@ -488,6 +692,7 @@ def run(config_path: str) -> None:
         cfg["seed"],
         include_neural_network=cfg.get("enable_neural_network", False),
         include_xgboost=cfg.get("enable_xgboost", True),
+        include_lightgbm=cfg.get("enable_lightgbm", False),
     )
     if cfg.get("enable_hyperparameter_tuning", True):
         candidate_models["extra_trees_tuned"] = tune_extra_trees(train, features, cfg["seed"], cfg["outperformance_threshold"])
@@ -516,11 +721,20 @@ def run(config_path: str) -> None:
     )
     best_model = candidate_models[best.name]
     best_model.fit(data[features], build_target(data, cfg["outperformance_threshold"]))
-    forward = predict_forward(best_model, cfg["forward_sample_path"], features, cfg["top_n_recommendations"])
+    forward = predict_forward(best_model, cfg["forward_sample_path"], features, cfg["top_n_recommendations"], sec_features, metadata)
     importances = feature_importance(best_model, features)
     shap_importances = shap_summary(best_model, test, features, cfg["shap_sample_size"])
     consensus = consensus_recommendations(selections, cfg["top_n_recommendations"])
     portfolio = portfolio_analytics(selections)
+    constrained_portfolio = construct_portfolios(
+        selections,
+        metadata,
+        transaction_cost_bps=cfg["transaction_cost_bps"],
+        max_position_weight=cfg["max_position_weight"],
+        max_sector_weight=cfg["max_sector_weight"],
+        portfolio_capital=cfg["portfolio_capital"],
+    )
+    constrained_portfolio_summary = constrained_portfolio_analytics(constrained_portfolio)
     write_reports(
         results=results,
         selections=selections,
@@ -535,6 +749,8 @@ def run(config_path: str) -> None:
         threshold_results=threshold_results,
         consensus=consensus,
         portfolio=portfolio,
+        constrained_portfolio=constrained_portfolio,
+        constrained_portfolio_summary=constrained_portfolio_summary,
     )
     print(json.dumps({"best_model": best.name, "macro_f1": best.macro_f1, "reports": cfg["report_dir"]}, indent=2))
 

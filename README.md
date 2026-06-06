@@ -15,9 +15,10 @@ My motivation was to build a project that shows both data science and business a
 - Uses real historical fundamental and market performance data from MachineLearningStocks.
 - Predicts whether a stock will outperform the S&P 500 by more than a configurable threshold.
 - Uses date-based train/test validation instead of random splitting.
-- Compares extra trees, random forest, gradient boosting, and XGBoost models.
+- Compares extra trees, random forest, gradient boosting, XGBoost, and optional LightGBM models.
 - Adds tuned ExtraTrees using time-series cross-validation.
 - Adds engineered valuation features such as Graham Number / Price, Free Cash Flow Yield, Debt / Cash, and Moving Average Spread.
+- Adds SEC filing-derived annual and quarterly features such as revenue growth, net income margin, debt-to-assets, R&D intensity, filing lag, and text risk score.
 - Adds missing-value-aware preprocessing instead of dropping every incomplete row.
 - Tests multiple outperformance thresholds.
 - Adds a regression framing that predicts relative stock outperformance directly.
@@ -25,6 +26,7 @@ My motivation was to build a project that shows both data science and business a
 - Adds feature importance reporting to show what the model is using.
 - Adds SHAP explanations for the best tree model so the drivers are easier to review.
 - Adds portfolio-level analytics across model-selected stock baskets, including volatility, hit rate, worst position return, and a simple Sharpe-style proxy.
+- Adds transaction costs, probability-weighted position sizing, and sector concentration limits for a more realistic portfolio construction layer.
 - Reports accuracy, precision, recall, macro F1, ROC AUC, selected-stock return, market return, and index-relative outperformance.
 - Generates forward stock recommendations from the latest available fundamentals sample.
 - Saves dashboard-ready CSVs and a Markdown analysis report.
@@ -32,9 +34,9 @@ My motivation was to build a project that shows both data science and business a
 
 ## What I Did Differently
 
-The original project used a random train/test split for backtesting, which can make results look better than they are. My version improves the project by using a chronological split, comparing multiple models including XGBoost, adding engineered fundamentals, tuning ExtraTrees, running threshold experiments, testing regression framing, and saving full evaluation artifacts.
+The original project used a random train/test split for backtesting, which can make results look better than they are. My version improves the project by using a chronological split, comparing multiple models including XGBoost and LightGBM, adding engineered fundamentals, joining SEC filing-derived features, tuning ExtraTrees, running threshold experiments, testing regression framing, and saving full evaluation artifacts.
 
-I also turned the workflow into a reusable pipeline with config-driven paths, tests, model comparison, forward recommendations, SHAP explanations, portfolio risk analytics, an analyst dashboard, and clear attribution.
+I also turned the workflow into a reusable pipeline with config-driven paths, tests, model comparison, forward recommendations, SHAP explanations, transaction-cost-aware portfolio construction, sector caps, an analyst dashboard, and clear attribution.
 
 ## Most Challenging Part
 
@@ -47,6 +49,7 @@ The most challenging part was improving the evaluation honestly. A random split 
 - Pandas
 - scikit-learn
 - XGBoost
+- LightGBM
 - SHAP
 - Streamlit
 - Plotly
@@ -98,22 +101,27 @@ reports/consensus_recommendations.csv stocks repeatedly selected by models
 reports/feature_importance.csv        ranked model feature importances
 reports/shap_summary.csv              SHAP-ranked model drivers
 reports/portfolio_analytics.csv       portfolio-level risk and return summary
+reports/portfolio_construction.csv    cost-aware sized positions after sector caps
+reports/constrained_portfolio_summary.csv net portfolio summary after costs and constraints
 reports/analysis_report.md            readable report with metrics and improvements
 ```
 
 ## Latest Results
 
-The default run compares ExtraTrees, tuned ExtraTrees, Random Forest, Gradient Boosting, and XGBoost on a chronological holdout set.
+The default run compares ExtraTrees, tuned ExtraTrees, Random Forest, Gradient Boosting, XGBoost, and LightGBM on a chronological holdout set with SEC filing-derived features enabled.
 
-- Best classifier by macro F1: `extra_trees`
-- Best classifier macro F1: `0.560`
-- Best classifier selected-stock outperformance: `21.53` percentage points
-- XGBoost selected-stock outperformance: `23.56` percentage points
-- Best portfolio outperformance by model: `random_forest` at `27.21` percentage points with a `0.768` hit rate
-- Top SHAP drivers: Total Debt/Equity missingness, Moving Average Spread, Beta, quarterly growth missingness, and Market Cap
+- Best classifier by macro F1: `random_forest`
+- Best classifier macro F1: `0.551`
+- Best classifier selected-stock outperformance: `25.20` percentage points
+- LightGBM macro F1: `0.537`
+- XGBoost selected-stock outperformance: `21.16` percentage points
+- Best unconstrained portfolio outperformance by model: `gradient_boosting` at `28.22` percentage points
+- Best constrained net portfolio outperformance after costs and sector caps: `gradient_boosting` at `15.91` percentage points
+- SEC-derived features are included in feature importance and SHAP outputs, including annual revenue growth, R&D intensity, filing lag, text risk score, and debt-to-assets.
+- Top SHAP drivers: Graham Number / Price, Enterprise Value, Total Debt/Equity, Market Cap, Net Income Avl to Common, and institutional ownership.
 - Strongest threshold experiment: `15%` outperformance threshold
-- Threshold experiment macro F1: `0.567`
-- Threshold experiment selected-stock outperformance: `26.81` percentage points
+- Threshold experiment macro F1: `0.566`
+- Threshold experiment selected-stock outperformance: `24.75` percentage points
 
 These results are generated by:
 
@@ -134,9 +142,9 @@ The original MIT license is preserved in `LICENSE-MachineLearningStocks.txt`.
 ## Future Improvements
 
 - Add walk-forward retraining across multiple market regimes.
-- Add transaction costs, position sizing, and sector concentration limits.
-- Add SEC filing-derived features from annual and quarterly reports.
-- Add LightGBM as an optional comparator for faster large-scale experiments.
+- Expand the SEC feature file with more companies, richer XBRL concepts, and management-discussion text embeddings.
+- Add transaction-cost sensitivity analysis across different turnover assumptions.
+- Add sector-neutral benchmarking against a live market data source.
 
 ## Disclaimer
 
