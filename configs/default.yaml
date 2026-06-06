@@ -4,5 +4,14 @@ keystats_path: data/sample/keystats.csv
 forward_sample_path: data/sample/forward_sample.csv
 train_end_date: "2011-12-31"
 outperformance_threshold: 10.0
+threshold_experiments:
+  - 5.0
+  - 10.0
+  - 15.0
+probability_cutoff: 0.5
 top_n_recommendations: 25
+missing_indicator_threshold: 0.10
+min_feature_non_missing_rate: 0.35
+enable_hyperparameter_tuning: true
+enable_neural_network: false
 report_dir: reports

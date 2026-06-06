@@ -34,6 +34,10 @@ def test_pipeline_writes_real_reports():
         "model_summary.csv",
         "backtest_selected_stocks.csv",
         "forward_recommendations.csv",
+        "regression_selected_stocks.csv",
+        "threshold_experiment.csv",
+        "consensus_recommendations.csv",
+        "feature_importance.csv",
         "analysis_report.md",
     ]:
         assert Path("reports", file_name).exists()
