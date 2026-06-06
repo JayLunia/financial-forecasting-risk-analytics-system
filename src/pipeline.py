@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+import shap
+from xgboost import XGBClassifier
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
@@ -129,7 +131,7 @@ def time_based_split(data: pd.DataFrame, train_end_date: str) -> tuple[pd.DataFr
     return train, test
 
 
-def models(seed: int, include_neural_network: bool = False) -> dict[str, Pipeline]:
+def models(seed: int, include_neural_network: bool = False, include_xgboost: bool = True) -> dict[str, Pipeline]:
     clipper = FunctionTransformer(lambda values: np.clip(values, -1e9, 1e9), validate=False)
     model_map = {
         "extra_trees": Pipeline([
@@ -169,6 +171,21 @@ def models(seed: int, include_neural_network: bool = False) -> dict[str, Pipelin
                 max_iter=450,
                 early_stopping=True,
                 random_state=seed,
+            )),
+        ])
+    if include_xgboost:
+        model_map["xgboost"] = Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", XGBClassifier(
+                n_estimators=300,
+                max_depth=3,
+                learning_rate=0.05,
+                subsample=0.85,
+                colsample_bytree=0.85,
+                eval_metric="logloss",
+                tree_method="hist",
+                random_state=seed,
+                n_jobs=-1,
             )),
         ])
     return model_map
@@ -282,6 +299,24 @@ def feature_importance(model: Pipeline, features: list[str]) -> pd.DataFrame:
     )
 
 
+def shap_summary(model: Pipeline, sample: pd.DataFrame, features: list[str], max_rows: int) -> pd.DataFrame:
+    estimator = model.named_steps["model"]
+    if not hasattr(estimator, "feature_importances_"):
+        return pd.DataFrame(columns=["feature", "mean_abs_shap"])
+    transformed = model.named_steps["imputer"].transform(sample[features].head(max_rows))
+    explainer = shap.TreeExplainer(estimator)
+    shap_values = explainer.shap_values(transformed)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[-1]
+    if getattr(shap_values, "ndim", 2) == 3:
+        shap_values = shap_values[:, :, -1]
+    return (
+        pd.DataFrame({"feature": features, "mean_abs_shap": np.abs(shap_values).mean(axis=0)})
+        .sort_values("mean_abs_shap", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 def threshold_sweep(train: pd.DataFrame, test: pd.DataFrame, features: list[str], seed: int, thresholds: list[float], probability_cutoff: float) -> pd.DataFrame:
     rows = []
     for threshold in thresholds:
@@ -331,6 +366,31 @@ def consensus_recommendations(selections: list[pd.DataFrame], top_n: int) -> pd.
     )
 
 
+def portfolio_analytics(selections: list[pd.DataFrame]) -> pd.DataFrame:
+    if not selections:
+        return pd.DataFrame()
+    selected = pd.concat(selections, ignore_index=True)
+    rows = []
+    for model_name, group in selected.groupby("model"):
+        returns = group["stock_p_change"].dropna()
+        market = group["SP500_p_change"].dropna()
+        outperformance = group["outperformance"].dropna()
+        rows.append({
+            "model": model_name,
+            "positions": int(len(group)),
+            "unique_tickers": int(group["Ticker"].nunique()),
+            "avg_stock_return": float(returns.mean()) if len(returns) else 0.0,
+            "avg_market_return": float(market.mean()) if len(market) else 0.0,
+            "avg_outperformance": float(outperformance.mean()) if len(outperformance) else 0.0,
+            "return_volatility": float(returns.std()) if len(returns) > 1 else 0.0,
+            "hit_rate": float((outperformance > 0).mean()) if len(outperformance) else 0.0,
+            "sharpe_proxy": float(returns.mean() / returns.std()) if len(returns) > 1 and returns.std() else 0.0,
+            "worst_position_return": float(returns.min()) if len(returns) else 0.0,
+            "best_position_return": float(returns.max()) if len(returns) else 0.0,
+        })
+    return pd.DataFrame(rows).sort_values("avg_outperformance", ascending=False)
+
+
 def write_reports(
     results: list[ModelResult],
     selections: list[pd.DataFrame],
@@ -341,8 +401,10 @@ def write_reports(
     regression_result: RegressionResult,
     regression_selection: pd.DataFrame,
     feature_importances: pd.DataFrame,
+    shap_importances: pd.DataFrame,
     threshold_results: pd.DataFrame,
     consensus: pd.DataFrame,
+    portfolio: pd.DataFrame,
 ) -> None:
     report_dir.mkdir(parents=True, exist_ok=True)
     metrics = pd.DataFrame([result.__dict__ for result in results]).sort_values("macro_f1", ascending=False)
@@ -352,8 +414,10 @@ def write_reports(
     forward.to_csv(report_dir / "forward_recommendations.csv", index=False)
     regression_selection.to_csv(report_dir / "regression_selected_stocks.csv", index=False)
     feature_importances.to_csv(report_dir / "feature_importance.csv", index=False)
+    shap_importances.to_csv(report_dir / "shap_summary.csv", index=False)
     threshold_results.to_csv(report_dir / "threshold_experiment.csv", index=False)
     consensus.to_csv(report_dir / "consensus_recommendations.csv", index=False)
+    portfolio.to_csv(report_dir / "portfolio_analytics.csv", index=False)
     (report_dir / "risk_dashboard.csv").write_text(selected.to_csv(index=False), encoding="utf-8")
 
     lines = [
@@ -374,6 +438,14 @@ def write_reports(
         "",
         threshold_results[["name", "macro_f1", "selected_stocks", "selected_outperformance"]].to_markdown(index=False),
         "",
+        "## Portfolio-Level Risk Analytics",
+        "",
+        portfolio.to_markdown(index=False),
+        "",
+        "## Top SHAP Drivers",
+        "",
+        shap_importances.head(15).to_markdown(index=False),
+        "",
         "## Consensus Picks",
         "",
         consensus.to_markdown(index=False),
@@ -388,7 +460,7 @@ def write_reports(
         "- Replaced random train/test splitting with date-based validation to reduce leakage.",
         "- Added model comparison across extra trees, random forest, and gradient boosting.",
         "- Added ROC AUC, F1, precision, recall, selected-stock return, and index-relative outperformance metrics.",
-        "- Added missing-value-aware preprocessing, engineered valuation features, SVM, neural net, tuned ExtraTrees, regression framing, threshold experiments, consensus recommendations, and feature importance.",
+        "- Added missing-value-aware preprocessing, engineered valuation features, neural net option, XGBoost, tuned ExtraTrees, regression framing, threshold experiments, consensus recommendations, feature importance, SHAP explanations, and portfolio-level risk analytics.",
         "- Added saved CSV and Markdown reports for reproducible evaluation.",
     ]
     (report_dir / "analysis_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -412,7 +484,11 @@ def run(config_path: str) -> None:
         raise ValueError("Too few common feature columns between historical and forward datasets")
     results: list[ModelResult] = []
     selections: list[pd.DataFrame] = []
-    candidate_models = models(cfg["seed"], include_neural_network=cfg.get("enable_neural_network", False))
+    candidate_models = models(
+        cfg["seed"],
+        include_neural_network=cfg.get("enable_neural_network", False),
+        include_xgboost=cfg.get("enable_xgboost", True),
+    )
     if cfg.get("enable_hyperparameter_tuning", True):
         candidate_models["extra_trees_tuned"] = tune_extra_trees(train, features, cfg["seed"], cfg["outperformance_threshold"])
     for name, model in candidate_models.items():
@@ -442,7 +518,9 @@ def run(config_path: str) -> None:
     best_model.fit(data[features], build_target(data, cfg["outperformance_threshold"]))
     forward = predict_forward(best_model, cfg["forward_sample_path"], features, cfg["top_n_recommendations"])
     importances = feature_importance(best_model, features)
+    shap_importances = shap_summary(best_model, test, features, cfg["shap_sample_size"])
     consensus = consensus_recommendations(selections, cfg["top_n_recommendations"])
+    portfolio = portfolio_analytics(selections)
     write_reports(
         results=results,
         selections=selections,
@@ -453,8 +531,10 @@ def run(config_path: str) -> None:
         regression_result=regression_result,
         regression_selection=regression_selection,
         feature_importances=importances,
+        shap_importances=shap_importances,
         threshold_results=threshold_results,
         consensus=consensus,
+        portfolio=portfolio,
     )
     print(json.dumps({"best_model": best.name, "macro_f1": best.macro_f1, "reports": cfg["report_dir"]}, indent=2))
 

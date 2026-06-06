@@ -14,4 +14,6 @@ missing_indicator_threshold: 0.10
 min_feature_non_missing_rate: 0.35
 enable_hyperparameter_tuning: true
 enable_neural_network: false
+enable_xgboost: true
+shap_sample_size: 300
 report_dir: reports

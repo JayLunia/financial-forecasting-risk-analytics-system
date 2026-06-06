@@ -38,6 +38,8 @@ def test_pipeline_writes_real_reports():
         "threshold_experiment.csv",
         "consensus_recommendations.csv",
         "feature_importance.csv",
+        "shap_summary.csv",
+        "portfolio_analytics.csv",
         "analysis_report.md",
     ]:
         assert Path("reports", file_name).exists()
