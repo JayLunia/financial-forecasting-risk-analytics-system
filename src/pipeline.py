@@ -91,13 +91,17 @@ def standardize_columns(data: pd.DataFrame) -> pd.DataFrame:
     return data.rename(columns={source: target for source, target in ALIASES.items() if source in data.columns})
 
 
+def parse_dates_ns(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values, errors="coerce").astype("datetime64[ns]")
+
+
 def median_imputer() -> SimpleImputer:
     return SimpleImputer(strategy="median", keep_empty_features=True)
 
 
 def load_dataset(path: str) -> pd.DataFrame:
     data = standardize_columns(pd.read_csv(path))
-    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data["Date"] = parse_dates_ns(data["Date"])
     data = data.dropna(subset=["Date", "Ticker", "stock_p_change", "SP500_p_change"])
     features = feature_columns(data)
     data = clean_numeric_frame(data, features + ["stock_p_change", "SP500_p_change"])
@@ -140,7 +144,7 @@ def load_sec_features(path: str | None) -> pd.DataFrame:
     required = {"Ticker", "Date"}
     if not required.issubset(sec.columns):
         raise ValueError(f"SEC feature file must contain columns: {sorted(required)}")
-    sec["Date"] = pd.to_datetime(sec["Date"], errors="coerce")
+    sec["Date"] = parse_dates_ns(sec["Date"])
     sec["_TickerKey"] = sec["Ticker"].map(normalize_ticker)
     feature_columns_to_clean = [column for column in sec.columns if column not in {"Ticker", "Date", "_TickerKey"}]
     sec = clean_numeric_frame(sec.dropna(subset=["Date", "_TickerKey"]), feature_columns_to_clean)
@@ -368,7 +372,7 @@ def predict_forward(
     metadata: pd.DataFrame,
 ) -> pd.DataFrame:
     forward = add_engineered_features(standardize_columns(pd.read_csv(forward_data_path)))
-    forward["Date"] = pd.to_datetime(forward["Date"], errors="coerce")
+    forward["Date"] = parse_dates_ns(forward["Date"])
     forward = merge_sec_features(forward, sec_features)
     forward = attach_metadata(forward, metadata)
     forward = clean_numeric_frame(forward, [column for column in features if column in forward.columns])
@@ -671,7 +675,7 @@ def run(config_path: str) -> None:
     metadata = load_ticker_metadata(cfg.get("ticker_metadata_path"))
     data = attach_metadata(merge_sec_features(add_engineered_features(load_dataset(cfg["keystats_path"])), sec_features), metadata)
     forward_preview = add_engineered_features(standardize_columns(pd.read_csv(cfg["forward_sample_path"], nrows=1)))
-    forward_preview["Date"] = pd.to_datetime(forward_preview["Date"], errors="coerce")
+    forward_preview["Date"] = parse_dates_ns(forward_preview["Date"])
     forward_preview = attach_metadata(merge_sec_features(forward_preview, sec_features), metadata)
     forward_columns = set(forward_preview.columns)
     train, test = time_based_split(data, cfg["train_end_date"])
