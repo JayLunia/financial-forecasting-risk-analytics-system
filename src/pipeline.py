@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -296,8 +297,11 @@ def tune_extra_trees(train: pd.DataFrame, features: list[str], seed: int, thresh
 def evaluate_model(name: str, model: Pipeline, train: pd.DataFrame, test: pd.DataFrame, features: list[str], threshold: float, probability_cutoff: float) -> tuple[ModelResult, pd.DataFrame]:
     y_train = build_target(train, threshold)
     y_test = build_target(test, threshold)
-    model.fit(train[features], y_train)
-    probabilities = model.predict_proba(test[features])[:, 1]
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        model.fit(train[features], y_train)
+        probabilities = model.predict_proba(test[features])[:, 1]
     predictions = (probabilities >= probability_cutoff).astype(int)
 
     selected = test.loc[predictions == 1, ["Date", "Ticker", "stock_p_change", "SP500_p_change"]].copy()
@@ -398,8 +402,11 @@ def shap_summary(model: Pipeline, sample: pd.DataFrame, features: list[str], max
     if not hasattr(estimator, "feature_importances_"):
         return pd.DataFrame(columns=["feature", "mean_abs_shap"])
     transformed = model.named_steps["imputer"].transform(sample[features].head(max_rows))
-    explainer = shap.TreeExplainer(estimator)
-    shap_values = explainer.shap_values(transformed)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        explainer = shap.TreeExplainer(estimator)
+        shap_values = explainer.shap_values(transformed)
     if isinstance(shap_values, list):
         shap_values = shap_values[-1]
     if getattr(shap_values, "ndim", 2) == 3:
@@ -720,8 +727,11 @@ def run(config_path: str) -> None:
         cfg["probability_cutoff"],
     )
     best_model = candidate_models[best.name]
-    best_model.fit(data[features], build_target(data, cfg["outperformance_threshold"]))
-    forward = predict_forward(best_model, cfg["forward_sample_path"], features, cfg["top_n_recommendations"], sec_features, metadata)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="X does not have valid feature names.*")
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        best_model.fit(data[features], build_target(data, cfg["outperformance_threshold"]))
+        forward = predict_forward(best_model, cfg["forward_sample_path"], features, cfg["top_n_recommendations"], sec_features, metadata)
     importances = feature_importance(best_model, features)
     shap_importances = shap_summary(best_model, test, features, cfg["shap_sample_size"])
     consensus = consensus_recommendations(selections, cfg["top_n_recommendations"])

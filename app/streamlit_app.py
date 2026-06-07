@@ -60,22 +60,22 @@ tab_models, tab_portfolio, tab_explain, tab_recommendations = st.tabs([
 
 with tab_models:
     st.subheader("Model Comparison")
-    st.dataframe(models, use_container_width=True)
+    st.dataframe(models, width="stretch")
     st.plotly_chart(
         px.bar(models, x="name", y="macro_f1", color="selected_outperformance", title="Macro F1 by model"),
-        use_container_width=True,
+        width="stretch",
     )
     if not thresholds.empty:
         st.subheader("Outperformance Threshold Experiment")
-        st.dataframe(thresholds, use_container_width=True)
+        st.dataframe(thresholds, width="stretch")
         st.plotly_chart(
             px.line(thresholds, x="name", y=["macro_f1", "selected_outperformance"], markers=True),
-            use_container_width=True,
+            width="stretch",
         )
 
 with tab_portfolio:
     st.subheader("Portfolio-Level Risk Analytics")
-    st.dataframe(portfolio, use_container_width=True)
+    st.dataframe(portfolio, width="stretch")
     if not portfolio.empty:
         st.plotly_chart(
             px.scatter(
@@ -87,10 +87,10 @@ with tab_portfolio:
                 hover_name="model",
                 title="Risk vs outperformance by model",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     st.subheader("Constrained Portfolio Construction")
-    st.dataframe(constrained_summary, use_container_width=True)
+    st.dataframe(constrained_summary, width="stretch")
     if not constrained_summary.empty:
         st.plotly_chart(
             px.bar(
@@ -100,11 +100,11 @@ with tab_portfolio:
                 color="total_transaction_cost_pct",
                 title="Net outperformance after transaction costs",
             ),
-            use_container_width=True,
+            width="stretch",
         )
     if not constrained_portfolio.empty:
         st.subheader("Position Sizing")
-        st.dataframe(constrained_portfolio, use_container_width=True)
+        st.dataframe(constrained_portfolio, width="stretch")
         sector_view = (
             constrained_portfolio.groupby(["model", "Sector"], as_index=False)["position_weight"].sum()
         )
@@ -116,22 +116,22 @@ with tab_portfolio:
                 color="Sector",
                 title="Sector weights after concentration limits",
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
 with tab_explain:
     st.subheader("SHAP Summary")
-    st.dataframe(shap_summary.head(25), use_container_width=True)
+    st.dataframe(shap_summary.head(25), width="stretch")
     if not shap_summary.empty:
         st.plotly_chart(
             px.bar(shap_summary.head(20), x="mean_abs_shap", y="feature", orientation="h", title="Top SHAP drivers"),
-            use_container_width=True,
+            width="stretch",
         )
     st.subheader("Tree Feature Importance")
-    st.dataframe(feature_importance.head(25), use_container_width=True)
+    st.dataframe(feature_importance.head(25), width="stretch")
 
 with tab_recommendations:
     st.subheader("Forward Recommendations")
-    st.dataframe(recommendations, use_container_width=True)
+    st.dataframe(recommendations, width="stretch")
     st.subheader("Consensus Recommendations")
-    st.dataframe(consensus, use_container_width=True)
+    st.dataframe(consensus, width="stretch")
